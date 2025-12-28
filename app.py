@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import os
 import random
 import time
@@ -15,15 +16,18 @@ from config import (
     DEFAULT_MUTATION_RATE,
     DEFAULT_POP_SIZE,
     DEFAULT_ROUNDS_PER_MATCH,
+    DEFAULT_PAYOFFS,
+    GENOTYPE_LENGTH,
 )
 from src.classic_strategies import get_classic_strategies
 from src.evolution import evolve_population
-from src.genetic_agent import GeneticAgent, random_genotype
+from src.genetic_agent import GeneticAgent, random_genotype, COOPERATE, DEFECT
 from src.leaderboard import run_leaderboard
 from src.logger import log_generation, setup_experiment_folder
 from src.simulation import (
     RoundLog,
     play_match_detailed,
+    play_match,
     run_internal_tournament,
     run_internal_tournament_with_progress,
 )
@@ -48,6 +52,7 @@ def _initialize_session(pop_size: int, seed: Optional[int]) -> None:
         "avg_fitness": [],
         "max_fitness": [],
         "min_fitness": [],
+        "cooperation_rate": [],
     }
     st.session_state.leaderboard = []
     st.session_state.spotlight_logs = []
@@ -57,10 +62,16 @@ def _initialize_session(pop_size: int, seed: Optional[int]) -> None:
     st.session_state.benchmark_opponent = None
     st.session_state.benchmark_generation = None
     st.session_state.log_folder = setup_experiment_folder(BASE_DATA_DIR)
+    st.session_state.final_population = []
+    st.session_state.simulation_completed = False
 
 
 def _action_label(action: int) -> str:
     return "C" if action == 1 else "D"
+
+
+def _action_emoji(action: int) -> str:
+    return "🤝" if action == 1 else "⚔️"
 
 
 def _round_logs_to_df(
@@ -68,22 +79,173 @@ def _round_logs_to_df(
 ) -> pd.DataFrame:
     return pd.DataFrame(
         {
-            "round": [log.round_index for log in logs],
-            f"{label_a} action": [_action_label(log.action_a) for log in logs],
-            f"{label_b} action": [_action_label(log.action_b) for log in logs],
-            f"{label_a} payoff": [log.payoff_a for log in logs],
-            f"{label_b} payoff": [log.payoff_b for log in logs],
-            f"{label_a} total": [log.cumulative_a for log in logs],
-            f"{label_b} total": [log.cumulative_b for log in logs],
+            "Round": [log.round_index for log in logs],
+            f"{label_a}": [_action_emoji(log.action_a) for log in logs],
+            f"{label_b}": [_action_emoji(log.action_b) for log in logs],
+            f"{label_a} Payoff": [log.payoff_a for log in logs],
+            f"{label_b} Payoff": [log.payoff_b for log in logs],
+            f"{label_a} Total": [log.cumulative_a for log in logs],
+            f"{label_b} Total": [log.cumulative_b for log in logs],
         }
     )
 
 
+def _genotype_to_str(genotype: List[int]) -> str:
+    return "".join(str(g) for g in genotype)
+
+
+def _calculate_cooperation_rate(population: List[GeneticAgent]) -> float:
+    """Calculate the average cooperation tendency of the population based on genotype."""
+    if not population:
+        return 0.0
+    total_coop = sum(sum(agent.genotype) for agent in population)
+    return total_coop / (len(population) * GENOTYPE_LENGTH)
+
+
+def _get_result_emoji(agent_score: float, opponent_score: float) -> str:
+    if agent_score > opponent_score:
+        return "✅ WIN"
+    elif agent_score < opponent_score:
+        return "❌ LOSS"
+    return "➖ TIE"
+
+
+def _render_payoff_matrix():
+    """Render the Prisoner's Dilemma payoff matrix."""
+    st.markdown("### 📊 Payoff Matrix")
+    payoff_data = {
+        "": ["You: **C**ooperate", "You: **D**efect"],
+        "Opponent: **C**ooperate": [
+            f"R={DEFAULT_PAYOFFS.reward}, R={DEFAULT_PAYOFFS.reward}",
+            f"T={DEFAULT_PAYOFFS.temptation}, S={DEFAULT_PAYOFFS.sucker}",
+        ],
+        "Opponent: **D**efect": [
+            f"S={DEFAULT_PAYOFFS.sucker}, T={DEFAULT_PAYOFFS.temptation}",
+            f"P={DEFAULT_PAYOFFS.punishment}, P={DEFAULT_PAYOFFS.punishment}",
+        ],
+    }
+    st.table(pd.DataFrame(payoff_data).set_index(""))
+    st.caption("T=Temptation, R=Reward, P=Punishment, S=Sucker")
+
+
+def _render_genotype_decoder(agent: GeneticAgent):
+    """Render a visual decoder for the agent's genotype."""
+    st.markdown("### 🧬 Genotype Decoder")
+    st.markdown(f"**Agent A{agent.id}** | Fitness: `{agent.fitness:.0f}`")
+    
+    genotype = agent.genotype
+    
+    # First two moves
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown(f"**Gene 0** (First move): {_action_emoji(genotype[0])} `{_action_label(genotype[0])}`")
+    with col2:
+        st.markdown(f"**Gene 1** (Second move): {_action_emoji(genotype[1])} `{_action_label(genotype[1])}`")
+    
+    # Response table (4x4 grid for 2-round history)
+    st.markdown("**Response Table** (Genes 2-17)")
+    st.caption("Rows: Previous round outcome | Columns: Two rounds ago outcome")
+    
+    outcomes = ["CC", "CD", "DC", "DD"]
+    response_matrix = []
+    for i, row_outcome in enumerate(outcomes):
+        row = []
+        for j, col_outcome in enumerate(outcomes):
+            gene_idx = 2 + j * 4 + i
+            action = genotype[gene_idx] if gene_idx < len(genotype) else 0
+            row.append(_action_emoji(action))
+        response_matrix.append(row)
+    
+    df = pd.DataFrame(response_matrix, index=outcomes, columns=outcomes)
+    df.index.name = "t-1"
+    st.dataframe(df, use_container_width=True)
+    st.caption("🤝 = Cooperate, ⚔️ = Defect")
+
+
+def _render_agents_scoreboard(population: List[GeneticAgent], elite_fraction: float):
+    """Render the ranked scoreboard of all genetic agents."""
+    st.markdown("### 🏆 Agent Rankings")
+    
+    sorted_pop = sorted(population, key=lambda a: a.fitness, reverse=True)
+    elite_count = int(len(population) * elite_fraction)
+    
+    data = []
+    for rank, agent in enumerate(sorted_pop, 1):
+        is_elite = rank <= elite_count
+        data.append({
+            "Rank": rank,
+            "Agent": f"A{agent.id}",
+            "Genotype": _genotype_to_str(agent.genotype)[:8] + "...",
+            "Fitness": f"{agent.fitness:.0f}",
+            "Elite": "⭐" if is_elite else "",
+        })
+    
+    df = pd.DataFrame(data)
+    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.caption(f"⭐ = Elite (Top {int(elite_fraction * 100)}%, copied to next generation)")
+
+
+def _render_classics_scoreboard(leaderboard: List[Dict[str, float]]):
+    """Render the best agent vs classic strategies scoreboard."""
+    st.markdown("### 🎯 Best Agent vs. Classic Strategies")
+    
+    if not leaderboard:
+        st.info("Run simulation to see benchmark results.")
+        return
+    
+    data = []
+    wins, losses, ties = 0, 0, 0
+    for entry in leaderboard:
+        agent_score = entry["agent_score"]
+        opponent_score = entry["opponent_score"]
+        result = _get_result_emoji(agent_score, opponent_score)
+        
+        if "WIN" in result:
+            wins += 1
+        elif "LOSS" in result:
+            losses += 1
+        else:
+            ties += 1
+        
+        data.append({
+            "Opponent": entry["opponent"],
+            "Agent Score": f"{agent_score:.0f}",
+            "Opponent Score": f"{opponent_score:.0f}",
+            "Result": result,
+            "Avg/Round": f"{entry['agent_avg']:.2f}",
+        })
+    
+    df = pd.DataFrame(data)
+    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.markdown(f"**Summary**: {wins} Wins ✅ | {losses} Losses ❌ | {ties} Ties ➖")
+
+
+def _render_match_emoji_sequence(logs: List[RoundLog], max_rounds: int = 50):
+    """Render an emoji-based visualization of the match."""
+    if not logs:
+        return
+    
+    st.markdown("**Match Sequence** (🤝=C, ⚔️=D)")
+    
+    display_logs = logs[:max_rounds]
+    sequence_a = " ".join(_action_emoji(log.action_a) for log in display_logs)
+    sequence_b = " ".join(_action_emoji(log.action_b) for log in display_logs)
+    
+    st.text(f"Agent A: {sequence_a}")
+    st.text(f"Agent B: {sequence_b}")
+    
+    if len(logs) > max_rounds:
+        st.caption(f"(Showing first {max_rounds} of {len(logs)} rounds)")
+
+
+# ==================== PAGE CONFIG ====================
 st.set_page_config(page_title="Evolutionary IPD", layout="wide")
 
-st.title("Evolutionary Iterated Prisoner's Dilemma")
+st.title("🎮 Evolutionary Iterated Prisoner's Dilemma")
+st.markdown("*Genetic Algorithm Approach to Game Theory*")
 
-st.sidebar.header("Simulation Controls")
+# ==================== SIDEBAR ====================
+st.sidebar.header("⚙️ Simulation Controls")
 pop_size = st.sidebar.number_input(
     "Population size",
     min_value=10,
@@ -135,51 +297,12 @@ animation_delay = st.sidebar.slider(
 )
 seed_input = st.sidebar.text_input("Random seed (optional)", value="")
 
-st.sidebar.subheader("Visualization")
+st.sidebar.subheader("📊 Visualization")
 detailed_tournament = st.sidebar.checkbox(
     "Detailed tournament progress (slower)", value=True
 )
-show_round_table = st.sidebar.checkbox("Show round-by-round tables", value=True)
-spotlight_mode = st.sidebar.selectbox(
-    "Spotlight match",
-    options=["None", "Best vs Random", "Random Pair", "Custom IDs"],
-    index=1,
-)
-spotlight_a_id = 0
-spotlight_b_id = 1
-if spotlight_mode == "Custom IDs":
-    spotlight_a_id = int(
-        st.sidebar.number_input(
-            "Spotlight agent A ID",
-            min_value=0,
-            max_value=max(0, pop_size - 1),
-            value=0,
-            step=1,
-        )
-    )
-    spotlight_b_id = int(
-        st.sidebar.number_input(
-            "Spotlight agent B ID",
-            min_value=0,
-            max_value=max(0, pop_size - 1),
-            value=min(1, max(0, pop_size - 1)),
-            step=1,
-        )
-    )
-    if spotlight_a_id == spotlight_b_id:
-        st.sidebar.error("Spotlight agents must be different.")
-
-show_benchmark_rounds = st.sidebar.checkbox(
-    "Show benchmark round-by-round", value=True
-)
-classic_strategies = get_classic_strategies()
-classic_names = [strategy.name for strategy in classic_strategies]
-selected_classic_name = st.sidebar.selectbox(
-    "Benchmark spotlight opponent", options=classic_names, index=0
-)
-selected_classic = next(
-    strategy for strategy in classic_strategies if strategy.name == selected_classic_name
-)
+show_payoff_matrix = st.sidebar.checkbox("Show payoff matrix", value=True)
+show_genotype_decoder = st.sidebar.checkbox("Show genotype decoder", value=True)
 
 seed_value: Optional[int] = None
 if seed_input.strip():
@@ -188,7 +311,7 @@ if seed_input.strip():
     except ValueError:
         st.sidebar.error("Seed must be an integer.")
 
-reset_clicked = st.sidebar.button("Initialize / Reset")
+reset_clicked = st.sidebar.button("🔄 Initialize / Reset")
 
 if (
     "population" not in st.session_state
@@ -201,41 +324,61 @@ if (
     st.session_state.pop_size = pop_size
     st.session_state.seed_value = seed_value
 
-st.caption(f"Logging to: {st.session_state.log_folder}")
+st.caption(f"📁 Logging to: `{st.session_state.log_folder}`")
 
-metrics_container = st.container()
-metric_cols = metrics_container.columns(3)
-avg_metric = metric_cols[0].empty()
-max_metric = metric_cols[1].empty()
-min_metric = metric_cols[2].empty()
+# ==================== MAIN LAYOUT ====================
 
-chart_placeholder = st.empty()
+# Top row: Metrics and Payoff Matrix
+top_cols = st.columns([2, 1]) if show_payoff_matrix else [st.container()]
 
+with top_cols[0]:
+    metrics_container = st.container()
+    metric_cols = metrics_container.columns(4)
+    avg_metric = metric_cols[0].empty()
+    max_metric = metric_cols[1].empty()
+    min_metric = metric_cols[2].empty()
+    coop_metric = metric_cols[3].empty()
+
+if show_payoff_matrix and len(top_cols) > 1:
+    with top_cols[1]:
+        _render_payoff_matrix()
+
+# Charts row
+chart_cols = st.columns(2)
+with chart_cols[0]:
+    st.markdown("### 📈 Fitness Over Generations")
+    chart_placeholder = st.empty()
+with chart_cols[1]:
+    st.markdown("### 🤝 Cooperation Rate Over Generations")
+    coop_chart_placeholder = st.empty()
+
+# Progress bars
 progress_container = st.container()
-progress_cols = progress_container.columns(3)
+progress_cols = progress_container.columns(2)
 gen_progress = progress_cols[0].progress(0.0, text="Generation")
 match_progress = progress_cols[1].progress(0.0, text="Match")
-round_progress = progress_cols[2].progress(0.0, text="Spotlight Round")
 status_placeholder = progress_container.empty()
 
-vis_cols = st.columns(2)
-tournament_panel = vis_cols[0]
-benchmark_panel = vis_cols[1]
+# Run button
+run_clicked = st.button("▶️ Run Simulation", type="primary")
 
-with tournament_panel:
-    st.subheader("Internal Tournament")
-    tournament_caption = st.empty()
-    tournament_rounds_placeholder = st.empty()
+st.divider()
 
-with benchmark_panel:
-    st.subheader("Benchmark vs Classics")
-    benchmark_round_progress = st.progress(0.0, text="Benchmark Round")
-    benchmark_status = st.empty()
-    leaderboard_placeholder = st.empty()
-    benchmark_caption = st.empty()
-    benchmark_rounds_placeholder = st.empty()
+# Scoreboards row
+scoreboard_cols = st.columns(2)
 
-run_clicked = st.button("Run Simulation")
+with scoreboard_cols[0]:
+    agents_scoreboard_placeholder = st.empty()
+
+with scoreboard_cols[1]:
+    classics_scoreboard_placeholder = st.empty()
+
+st.divider()
+
+# Genotype decoder section
+genotype_decoder_placeholder = st.empty()
+
+# ==================== SIMULATION LOGIC ====================
 if run_clicked:
     population: List[GeneticAgent] = st.session_state.population
     rng: random.Random = st.session_state.rng
@@ -246,27 +389,7 @@ if run_clicked:
             (gen + 1) / generations, text=f"Generation {gen + 1}/{generations}"
         )
         match_progress.progress(0.0, text="Match")
-        round_progress.progress(0.0, text="Spotlight Round")
 
-        spotlight_pair: Tuple[int, int] | None = None
-        if pop_size > 1 and spotlight_mode != "None":
-            if spotlight_mode == "Best vs Random":
-                spotlight_pair = (0, rng.randrange(1, pop_size))
-            elif spotlight_mode == "Random Pair":
-                a_id = rng.randrange(0, pop_size)
-                b_id = rng.randrange(0, pop_size - 1)
-                if b_id >= a_id:
-                    b_id += 1
-                spotlight_pair = (a_id, b_id)
-            else:
-                if spotlight_a_id != spotlight_b_id:
-                    spotlight_pair = (spotlight_a_id, spotlight_b_id)
-
-        spotlight_label = "None"
-        if spotlight_pair is not None:
-            spotlight_label = f"A{spotlight_pair[0]} vs A{spotlight_pair[1]}"
-
-        spotlight_logs: List[RoundLog] | None = None
         if detailed_tournament:
             progress_state: Dict[str, int] = {"match_index": 0, "match_total": 0}
 
@@ -281,80 +404,64 @@ if run_clicked:
                         text=f"Match {match_index}/{match_total} (A{agent_a_id} vs A{agent_b_id})",
                     )
                 status_placeholder.text(
-                    f"Gen {gen + 1}/{generations} | Match {match_index}/{match_total} | Spotlight {spotlight_label}"
+                    f"Gen {gen + 1}/{generations} | Match {match_index}/{match_total}"
                 )
 
-            def round_callback(round_log: RoundLog, rounds_total: int) -> None:
-                round_progress.progress(
-                    round_log.round_index / rounds_total,
-                    text=f"Spotlight Round {round_log.round_index}/{rounds_total}",
-                )
-                status_placeholder.text(
-                    f"Gen {gen + 1}/{generations} | Match {progress_state['match_index']}/{progress_state['match_total']} "
-                    f"| {spotlight_label} | Round {round_log.round_index}/{rounds_total} | "
-                    f"Score {round_log.cumulative_a}-{round_log.cumulative_b}"
-                )
-
-            stats, spotlight_logs = run_internal_tournament_with_progress(
+            stats, _ = run_internal_tournament_with_progress(
                 population,
                 rounds_per_match,
-                spotlight_pair=spotlight_pair,
+                spotlight_pair=None,
                 match_callback=match_callback,
-                round_callback=round_callback,
+                round_callback=None,
             )
         else:
             stats = run_internal_tournament(population, rounds_per_match)
 
         log_generation(population, gen, st.session_state.log_folder)
 
+        # Calculate cooperation rate
+        coop_rate = _calculate_cooperation_rate(population)
+
         history["generation"].append(gen)
         history["avg_fitness"].append(stats["avg_fitness"])
         history["max_fitness"].append(stats["max_fitness"])
         history["min_fitness"].append(stats["min_fitness"])
+        history["cooperation_rate"].append(coop_rate)
 
-        history_df = pd.DataFrame(history).set_index("generation")
+        # Update fitness chart
+        fitness_df = pd.DataFrame({
+            "Avg": history["avg_fitness"],
+            "Max": history["max_fitness"],
+            "Min": history["min_fitness"],
+        }, index=history["generation"])
+        chart_placeholder.line_chart(fitness_df)
 
-        avg_metric.metric("Avg Fitness", f"{stats['avg_fitness']:.2f}")
-        max_metric.metric("Max Fitness", f"{stats['max_fitness']:.2f}")
-        min_metric.metric("Min Fitness", f"{stats['min_fitness']:.2f}")
+        # Update cooperation chart
+        coop_df = pd.DataFrame({
+            "Cooperation %": [r * 100 for r in history["cooperation_rate"]],
+        }, index=history["generation"])
+        coop_chart_placeholder.line_chart(coop_df)
 
-        chart_placeholder.line_chart(history_df)
+        avg_metric.metric("Avg Fitness", f"{stats['avg_fitness']:.0f}")
+        max_metric.metric("Max Fitness", f"{stats['max_fitness']:.0f}")
+        min_metric.metric("Min Fitness", f"{stats['min_fitness']:.0f}")
+        coop_metric.metric("Cooperation %", f"{coop_rate * 100:.1f}%")
 
-        if spotlight_logs and show_round_table:
-            st.session_state.spotlight_logs = spotlight_logs
-            st.session_state.spotlight_pair = spotlight_pair
-            st.session_state.spotlight_generation = gen
+        # Update agents scoreboard
+        with agents_scoreboard_placeholder.container():
+            _render_agents_scoreboard(population, elite_fraction)
 
         if gen % benchmark_interval == 0:
             best_agent = max(population, key=lambda agent: agent.fitness)
             leaderboard = run_leaderboard(best_agent, rounds_per_match)
             st.session_state.leaderboard = leaderboard
-            leaderboard_placeholder.dataframe(pd.DataFrame(leaderboard))
+            
+            # Update classics scoreboard
+            with classics_scoreboard_placeholder.container():
+                _render_classics_scoreboard(leaderboard)
 
-            if show_benchmark_rounds:
-                benchmark_round_progress.progress(0.0, text="Benchmark Round")
-
-                def benchmark_round_callback(
-                    round_log: RoundLog, rounds_total: int
-                ) -> None:
-                    benchmark_round_progress.progress(
-                        round_log.round_index / rounds_total,
-                        text=f"Round {round_log.round_index}/{rounds_total}",
-                    )
-                    benchmark_status.text(
-                        f"Best vs {selected_classic.name} | Round {round_log.round_index}/{rounds_total} "
-                        f"| Score {round_log.cumulative_a}-{round_log.cumulative_b}"
-                    )
-
-                _, _, benchmark_logs = play_match_detailed(
-                    best_agent,
-                    selected_classic,
-                    rounds_per_match,
-                    round_callback=benchmark_round_callback,
-                )
-                st.session_state.benchmark_logs = benchmark_logs
-                st.session_state.benchmark_opponent = selected_classic.name
-                st.session_state.benchmark_generation = gen
+        # Save final population before evolution (to preserve fitness scores)
+        st.session_state.final_population = copy.deepcopy(population)
 
         population = evolve_population(
             population,
@@ -368,39 +475,45 @@ if run_clicked:
         if animation_delay > 0:
             time.sleep(animation_delay)
 
+    # Mark simulation as completed
+    st.session_state.simulation_completed = True
+
+# ==================== STATIC DISPLAY (after simulation) ====================
+
+# Show completion status
+if st.session_state.get("simulation_completed") and st.session_state.get("final_population"):
+    status_placeholder.success(f"✅ Simulation completed! Final results from generation {st.session_state.generation}")
+
+# Display leaderboards if available
 if st.session_state.leaderboard:
-    leaderboard_placeholder.dataframe(pd.DataFrame(st.session_state.leaderboard))
+    with classics_scoreboard_placeholder.container():
+        _render_classics_scoreboard(st.session_state.leaderboard)
 
+# Use final_population (with fitness scores) if available, otherwise use current population
+display_population = st.session_state.get("final_population") or st.session_state.get("population")
+if display_population:
+    with agents_scoreboard_placeholder.container():
+        _render_agents_scoreboard(display_population, elite_fraction)
+
+# Display charts if history available
 if st.session_state.history["generation"]:
-    history_df = pd.DataFrame(st.session_state.history).set_index("generation")
-    chart_placeholder.line_chart(history_df)
+    fitness_df = pd.DataFrame({
+        "Avg": st.session_state.history["avg_fitness"],
+        "Max": st.session_state.history["max_fitness"],
+        "Min": st.session_state.history["min_fitness"],
+    }, index=st.session_state.history["generation"])
+    chart_placeholder.line_chart(fitness_df)
+    
+    if st.session_state.history.get("cooperation_rate"):
+        coop_df = pd.DataFrame({
+            "Cooperation %": [r * 100 for r in st.session_state.history["cooperation_rate"]],
+        }, index=st.session_state.history["generation"])
+        coop_chart_placeholder.line_chart(coop_df)
 
-if show_round_table and st.session_state.spotlight_logs:
-    pair = st.session_state.spotlight_pair
-    generation = st.session_state.spotlight_generation
-    if pair is not None:
-        label_a = f"A{pair[0]}"
-        label_b = f"A{pair[1]}"
-    else:
-        label_a = "A"
-        label_b = "B"
-    if generation is not None:
-        tournament_caption.caption(
-            f"Spotlight match from generation {generation}: {label_a} vs {label_b}"
-        )
-    tournament_rounds_placeholder.dataframe(
-        _round_logs_to_df(st.session_state.spotlight_logs, label_a, label_b),
-        use_container_width=True,
-    )
-
-if show_benchmark_rounds and st.session_state.benchmark_logs:
-    opponent = st.session_state.benchmark_opponent or selected_classic.name
-    generation = st.session_state.benchmark_generation
-    if generation is not None:
-        benchmark_caption.caption(
-            f"Benchmark spotlight from generation {generation}: Best vs {opponent}"
-        )
-    benchmark_rounds_placeholder.dataframe(
-        _round_logs_to_df(st.session_state.benchmark_logs, "Best", opponent),
-        use_container_width=True,
-    )
+# Display genotype decoder for best agent
+if show_genotype_decoder:
+    decoder_population = st.session_state.get("final_population") or st.session_state.get("population")
+    if decoder_population:
+        best_agent = max(decoder_population, key=lambda a: a.fitness)
+        with genotype_decoder_placeholder.container():
+            _render_genotype_decoder(best_agent)
