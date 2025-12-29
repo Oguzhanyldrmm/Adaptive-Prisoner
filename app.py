@@ -22,6 +22,7 @@ from config import (
 from src.classic_strategies import get_classic_strategies
 from src.evolution import evolve_population
 from src.genetic_agent import GeneticAgent, random_genotype, COOPERATE, DEFECT
+from src.god_mode import GodEngine
 from src.leaderboard import run_leaderboard
 from src.logger import log_generation, setup_experiment_folder
 from src.simulation import (
@@ -31,6 +32,7 @@ from src.simulation import (
     run_internal_tournament,
     run_internal_tournament_with_progress,
 )
+from src.character_generator import generate_character_profile, decode_genotype_to_text
 
 BASE_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
@@ -304,6 +306,13 @@ detailed_tournament = st.sidebar.checkbox(
 show_payoff_matrix = st.sidebar.checkbox("Show payoff matrix", value=True)
 show_genotype_decoder = st.sidebar.checkbox("Show genotype decoder", value=True)
 
+st.sidebar.subheader("⚡ God Mode")
+god_mode_enabled = st.sidebar.checkbox(
+    "Enable God Mode (Environmental Stressors)", value=False
+)
+if god_mode_enabled:
+    st.sidebar.caption("🎲 Rules: Trembling Hand (5%), Economic Crisis (2%), High Temptation (10%), Memory Loss (5%), Info Leak (5%)")
+
 seed_value: Optional[int] = None
 if seed_input.strip():
     try:
@@ -383,6 +392,12 @@ if run_clicked:
     population: List[GeneticAgent] = st.session_state.population
     rng: random.Random = st.session_state.rng
     history: Dict[str, List[Any]] = st.session_state.history
+    
+    # Initialize God Engine if enabled
+    god_engine: GodEngine | None = None
+    if god_mode_enabled:
+        god_engine = GodEngine(rng=rng)
+        status_placeholder.info("⚡ God Mode ACTIVE - Environmental stressors enabled")
 
     for gen in range(st.session_state.generation, generations):
         gen_progress.progress(
@@ -403,8 +418,9 @@ if run_clicked:
                         match_index / match_total,
                         text=f"Match {match_index}/{match_total} (A{agent_a_id} vs A{agent_b_id})",
                     )
+                god_mode_label = " ⚡" if god_mode_enabled else ""
                 status_placeholder.text(
-                    f"Gen {gen + 1}/{generations} | Match {match_index}/{match_total}"
+                    f"Gen {gen + 1}/{generations} | Match {match_index}/{match_total}{god_mode_label}"
                 )
 
             stats, _ = run_internal_tournament_with_progress(
@@ -413,9 +429,10 @@ if run_clicked:
                 spotlight_pair=None,
                 match_callback=match_callback,
                 round_callback=None,
+                god_engine=god_engine,
             )
         else:
-            stats = run_internal_tournament(population, rounds_per_match)
+            stats = run_internal_tournament(population, rounds_per_match, god_engine=god_engine)
 
         log_generation(population, gen, st.session_state.log_folder)
 
@@ -517,3 +534,51 @@ if show_genotype_decoder:
         best_agent = max(decoder_population, key=lambda a: a.fitness)
         with genotype_decoder_placeholder.container():
             _render_genotype_decoder(best_agent)
+
+# ==================== CHARACTER ANALYSIS ====================
+st.divider()
+st.markdown("### 🎭 Character Analysis")
+
+if st.session_state.get("simulation_completed") and st.session_state.get("final_population"):
+    analyze_col1, analyze_col2 = st.columns([1, 2])
+    
+    with analyze_col1:
+        analyze_clicked = st.button("🔬 Analyze Champion", type="secondary")
+    
+    with analyze_col2:
+        st.caption("Run behavioral tests and generate character profile with LLM")
+    
+    if analyze_clicked:
+        best_agent = max(st.session_state.final_population, key=lambda a: a.fitness)
+        
+        with st.spinner("Running behavioral tests..."):
+            result = generate_character_profile(
+                agent=best_agent,
+                base_dir=BASE_DATA_DIR,
+            )
+        
+        st.success(f"✅ Analysis complete! Files saved to: `{result['save_dir']}`")
+        
+        # Display results
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### 📊 Behavioral Profile")
+            raw_stats = result['raw_stats']
+            st.markdown(f"**Saint Test:** {raw_stats.get('saint_test_label', 'N/A')} ({raw_stats.get('saint_test_defections', 0)}/50 defections)")
+            st.markdown(f"**Provocation Test:** {raw_stats.get('provocation_test_label', 'N/A')}")
+            st.markdown(f"**Noise Tolerance:** {raw_stats.get('noise_test_label', 'N/A')}")
+            st.markdown(f"**Greed Test:** {raw_stats.get('greed_test_label', 'N/A')}")
+        
+        with col2:
+            if result.get('llm_response'):
+                st.markdown("#### 🎭 Character Profile")
+                llm = result['llm_response']
+                st.markdown(f"**Name:** {llm.get('name', 'Unknown')}")
+                st.markdown(f"**Motto:** _{llm.get('motto', 'N/A')}_")
+                st.markdown(f"**Alignment:** {llm.get('rpg_alignment', 'Unknown')}")
+                st.markdown(f"**Analysis:** {llm.get('description', 'N/A')}")
+            else:
+                st.warning("LLM response not available. Set OPENAI_API_KEY in config.py")
+else:
+    st.info("Run a simulation first to analyze the champion agent.")

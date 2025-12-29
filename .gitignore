@@ -22,3 +22,6 @@ Thumbs.db
 # Project specific
 *.log
 data/tournament_*/
+
+# Environment variables (API keys)
+.env

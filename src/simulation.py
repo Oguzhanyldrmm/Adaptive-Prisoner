@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Protocol, Sequence, Tuple
+from typing import Callable, Dict, List, Protocol, Sequence, Tuple, TYPE_CHECKING
 
 from config import DEFAULT_PAYOFFS, PayoffMatrix
 from .genetic_agent import Action, History, COOPERATE, DEFECT, GeneticAgent
+
+if TYPE_CHECKING:
+    from .god_mode import GodEngine
 
 
 class ActionAgent(Protocol):
@@ -20,6 +23,7 @@ class RoundLog:
     payoff_b: int
     cumulative_a: int
     cumulative_b: int
+    active_rules: List[str] | None = None  # God Mode rules active this round
 
 
 RoundCallback = Callable[[RoundLog, int], None]
@@ -43,6 +47,7 @@ def play_match(
     agent_b: ActionAgent,
     rounds: int,
     payoffs: PayoffMatrix = DEFAULT_PAYOFFS,
+    god_engine: GodEngine | None = None,
 ) -> Tuple[int, int]:
     history_a: List[Tuple[Action, Action]] = []
     history_b: List[Tuple[Action, Action]] = []
@@ -50,13 +55,49 @@ def play_match(
     score_b = 0
 
     for _ in range(rounds):
-        action_a = agent_a.get_action(history_a)
-        action_b = agent_b.get_action(history_b)
+        # Get agent history (may be modified by god_engine)
+        effective_history_a = history_a
+        effective_history_b = history_b
+        round_payoffs = payoffs
+        
+        # Apply God Mode rules before getting actions
+        if god_engine is not None:
+            # First get intended actions for potential info leak
+            intended_action_a = agent_a.get_action(history_a)
+            intended_action_b = agent_b.get_action(history_b)
+            
+            # Apply environment rules
+            result = god_engine.apply_environment_rules(
+                intended_action_a,
+                intended_action_b,
+                history_a,
+                history_b,
+                payoffs,
+            )
+            
+            # Use modified values
+            effective_history_a = result.history_a
+            effective_history_b = result.history_b
+            round_payoffs = result.payoffs
+            
+            # Re-get actions with potentially modified history (memory loss)
+            if result.history_a != history_a:
+                action_a = agent_a.get_action(effective_history_a)
+            else:
+                action_a = result.action_a  # Use potentially trembled action
+            
+            if result.history_b != history_b:
+                action_b = agent_b.get_action(effective_history_b)
+            else:
+                action_b = result.action_b
+        else:
+            action_a = agent_a.get_action(history_a)
+            action_b = agent_b.get_action(history_b)
 
         history_a.append((action_a, action_b))
         history_b.append((action_b, action_a))
 
-        payoff_a, payoff_b = _round_payoff(action_a, action_b, payoffs)
+        payoff_a, payoff_b = _round_payoff(action_a, action_b, round_payoffs)
         score_a += payoff_a
         score_b += payoff_b
 
@@ -107,6 +148,7 @@ def run_internal_tournament(
     population: Sequence[GeneticAgent],
     rounds: int,
     payoffs: PayoffMatrix = DEFAULT_PAYOFFS,
+    god_engine: GodEngine | None = None,
 ) -> Dict[str, float]:
     if not population:
         return {"avg_fitness": 0.0, "max_fitness": 0.0, "min_fitness": 0.0}
@@ -121,7 +163,7 @@ def run_internal_tournament(
         agent_i = pop_list[i]
         for j in range(i + 1, pop_size):
             agent_j = pop_list[j]
-            score_i, score_j = play_match(agent_i, agent_j, rounds, payoffs)
+            score_i, score_j = play_match(agent_i, agent_j, rounds, payoffs, god_engine)
             agent_i.fitness += score_i
             agent_j.fitness += score_j
 
@@ -144,6 +186,7 @@ def run_internal_tournament_with_progress(
     spotlight_pair: Tuple[int, int] | None = None,
     match_callback: MatchCallback | None = None,
     round_callback: RoundCallback | None = None,
+    god_engine: GodEngine | None = None,
 ) -> Tuple[Dict[str, float], List[RoundLog] | None]:
     if not population:
         return {"avg_fitness": 0.0, "max_fitness": 0.0, "min_fitness": 0.0}, None
@@ -182,7 +225,7 @@ def run_internal_tournament_with_progress(
                     round_callback=round_callback,
                 )
             else:
-                score_i, score_j = play_match(agent_i, agent_j, rounds, payoffs)
+                score_i, score_j = play_match(agent_i, agent_j, rounds, payoffs, god_engine)
 
             agent_i.fitness += score_i
             agent_j.fitness += score_j
