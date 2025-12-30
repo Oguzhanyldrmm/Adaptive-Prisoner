@@ -101,7 +101,7 @@ def call_llm_api(prompt: str) -> Optional[Dict[str, Any]]:
         client = openai.OpenAI(api_key=OPENAI_API_KEY)
         
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5.1-2025-11-13",
             messages=[
                 {"role": "system", "content": "You are a game theory psychologist. Always respond with valid JSON only."},
                 {"role": "user", "content": prompt}
