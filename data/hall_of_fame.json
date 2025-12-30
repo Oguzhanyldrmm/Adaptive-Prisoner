@@ -1,0 +1,62 @@
+[
+  {
+    "id": "champion_20251230_161830_0",
+    "genotype": [
+      0,
+      0,
+      1,
+      0,
+      1,
+      1,
+      1,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      1,
+      1
+    ],
+    "character_name": "The Calculated Opportunist",
+    "motto": "I endure your chaos, exploit your kindness, and reset when war grows stale.",
+    "rpg_alignment": "Lawful Evil",
+    "description": "This agent is hardwired to open with hostility and to treat generosity as an invitation to exploit, yet its genome also encodes periodic resets to cooperation once mutual defection becomes unprofitable. Psychologically, it combines short-term predatory instincts with a cold, rule-based willingness to forgive quickly when revenge is achieved or stalemate sets in, maximizing gain while avoiding endless, wasteful conflict.",
+    "original_fitness": 12695.0,
+    "session_id": "20251230_161830",
+    "created_at": "2025-12-30T16:18:30.307590"
+  },
+  {
+    "id": "champion_20251230_162112_1",
+    "genotype": [
+      0,
+      1,
+      0,
+      1,
+      1,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0
+    ],
+    "character_name": "The Fragile Strategist",
+    "motto": "I seek order in cooperation, but one crack in the peace is enough to justify my shield staying raised.",
+    "rpg_alignment": "Lawful Neutral",
+    "description": "This agent is cognitively wired to treat cooperation as a temporary tactical phase rather than a stable moral commitment, quickly reverting to defection even after stretches of mutual peace. Its low tolerance for mistakes and unforgiving response to betrayal create a rigid, self-protective style that values principled consistency over adaptive trust, making its kindness intermittent and its grudges enduring.",
+    "original_fitness": 7857.0,
+    "session_id": "20251230_162112",
+    "created_at": "2025-12-30T16:21:12.489342"
+  }
+]

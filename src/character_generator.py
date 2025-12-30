@@ -180,13 +180,21 @@ def generate_character_profile(
     agent,
     base_dir: str,
     timestamp: Optional[str] = None,
+    save_to_hall_of_fame: bool = True,
 ) -> Dict[str, Any]:
     """
     Full pipeline: profile agent, generate prompt, call LLM, save files.
     
+    Args:
+        agent: The champion agent to analyze
+        base_dir: Base directory for saving files
+        timestamp: Optional timestamp for file naming
+        save_to_hall_of_fame: Whether to save to hall of fame (default True)
+    
     Returns dict with profile data and file paths.
     """
     from .profiler import analyze_champion
+    from .hall_of_fame import add_champion
     
     # Step 1: Run behavioral tests
     raw_stats = analyze_champion(agent)
@@ -207,9 +215,23 @@ def generate_character_profile(
         timestamp=timestamp,
     )
     
+    # Step 5: Save to Hall of Fame if LLM succeeded
+    champion_id = None
+    if save_to_hall_of_fame and llm_response:
+        champion_id = add_champion(
+            genotype=list(agent.genotype),
+            character_name=llm_response.get("name", f"Champion {agent.id}"),
+            motto=llm_response.get("motto", ""),
+            rpg_alignment=llm_response.get("rpg_alignment", ""),
+            description=llm_response.get("description", ""),
+            original_fitness=agent.fitness,
+            session_id=timestamp,
+        )
+    
     return {
         "raw_stats": raw_stats,
         "llm_response": llm_response,
         "prompt": prompt,
         "save_dir": save_dir,
+        "champion_id": champion_id,
     }
