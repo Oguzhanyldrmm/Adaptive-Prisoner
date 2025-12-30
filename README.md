@@ -15,14 +15,16 @@ A Genetic Algorithm approach to evolving strategies for the Iterated Prisoner's 
 3. [System Architecture](#system-architecture)
 4. [Genetic Algorithm Pipeline](#genetic-algorithm-pipeline)
 5. [The 18-Gene Genome](#the-18-gene-genome)
-6. [God Mode: Environmental Stressors](#god-mode-environmental-stressors)
-7. [Behavioral Profiler](#behavioral-profiler)
-8. [LLM Character Generator](#llm-character-generator)
-9. [Installation](#installation)
-10. [Usage Guide](#usage-guide)
-11. [Example Scenario](#example-scenario)
-12. [File Structure](#file-structure)
-13. [Configuration](#configuration)
+6. [Classic Strategies](#classic-strategies)
+7. [God Mode: Environmental Stressors](#god-mode-environmental-stressors)
+8. [Behavioral Profiler](#behavioral-profiler)
+9. [LLM Character Generator](#llm-character-generator)
+10. [Champions Hall of Fame](#champions-hall-of-fame)
+11. [Installation](#installation)
+12. [Usage Guide](#usage-guide)
+13. [Example Scenario](#example-scenario)
+14. [File Structure](#file-structure)
+15. [Configuration](#configuration)
 
 ---
 
@@ -240,6 +242,50 @@ This genome encodes a **Tit-for-Tat variant**: starts cooperating, retaliates wh
 
 ---
 
+## Classic Strategies
+
+The system includes 5 **classic IPD strategies** that serve as benchmarks. Evolved agents are periodically tested against these strategies to measure their performance.
+
+### The 5 Classic Strategies
+
+| Strategy | Description | Behavior |
+|----------|-------------|----------|
+| **Always Cooperate** | Pure altruist | Always plays C, regardless of opponent |
+| **Always Defect** | Pure exploiter | Always plays D, regardless of opponent |
+| **Tit-for-Tat** | Mirror strategy | Cooperates first, then copies opponent's last move |
+| **Grim Trigger** | Unforgiving | Cooperates until betrayed, then defects forever |
+| **Tit-for-Two-Tats** | Forgiving TFT | Only retaliates after opponent defects twice in a row |
+
+### How They're Used
+
+1. **Benchmark Leaderboard**: Every N generations (configurable), the best agent is tested against all classic strategies
+2. **Performance Comparison**: Shows how evolved agents compare to proven strategies
+3. **Behavioral Profiler**: Uses AlwaysCooperate for the Saint Test and TitForTat for other tests
+
+### Classic Strategy Performance
+
+```
+Typical performance hierarchy:
+1. Tit-for-Tat     - Robust, forgiving, retaliatory
+2. Tit-for-Two-Tats - More forgiving, handles noise better
+3. Grim Trigger     - Strong but unforgiving
+4. Always Cooperate - Exploited by defectors
+5. Always Defect    - Low scores in cooperative environments
+```
+
+### Implementation
+
+Located in `src/classic_strategies.py`:
+
+```python
+def _tit_for_tat(history: History) -> Action:
+    if not history:
+        return COOPERATE
+    return history[-1][1]  # Copy opponent's last move
+```
+
+---
+
 ## God Mode: Environmental Stressors
 
 God Mode introduces **chaos** into the simulation to test agent resilience. Each rule triggers independently with its own probability.
@@ -352,6 +398,63 @@ data/tournament_{timestamp}/agent_{id}_champion/
 ├── character_profile.json # LLM's JSON response
 └── raw_stats.json        # Numerical profiler data
 ```
+
+---
+
+## Champions Hall of Fame
+
+The Hall of Fame system allows you to save champion agents and pit them against each other in **All-Star Tournaments**.
+
+### How It Works
+
+1. **Auto-Save**: When you analyze a champion (🔬 Analyze Champion), they're automatically saved to the Hall of Fame
+2. **Character Names**: Champions are saved with their LLM-generated names (e.g., "The Ruthless Capitalist")
+3. **Persistent Storage**: Champions persist in `data/hall_of_fame.json`
+4. **Tournament Mode**: Select 2+ champions and run tournaments between them
+
+### Accessing the Champions Page
+
+Navigate to the **"Champions"** page in the Streamlit sidebar to:
+- View all saved champions with their names, mottos, and alignments
+- Select champions for tournament battles
+- Run All-Star Tournaments with customizable settings
+
+### Champion Data Stored
+
+| Field | Description |
+|-------|-------------|
+| `character_name` | LLM-generated name |
+| `motto` | Character's motto |
+| `rpg_alignment` | D&D-style alignment |
+| `genotype` | 18-gene strategy encoding |
+| `original_fitness` | Fitness from original session |
+| `created_at` | Timestamp of creation |
+
+### All-Star Tournament
+
+```
+┌─────────────────────────────────────────────────┐
+│           🏆 ALL-STAR TOURNAMENT                │
+│                                                 │
+│  Select Champions:                              │
+│  ☑ The Ruthless Capitalist                      │
+│  ☑ The Diplomatic Enforcer                      │
+│  ☑ The Stoic Monk                               │
+│  ☐ The Chaotic Opportunist                      │
+│                                                 │
+│  Rounds per match: [150]                        │
+│  Number of tournaments: [3]                     │
+│                                                 │
+│  [🏟️ Start All-Star Tournament]                │
+└─────────────────────────────────────────────────┘
+```
+
+### Results Display
+
+After running a tournament:
+- **Winner announcement** with total fitness
+- **Rankings table** showing all champions
+- **Fitness comparison chart** (bar graph)
 
 ---
 
@@ -531,13 +634,16 @@ Files are saved to `data/tournament_20251229_120000/agent_4_champion/`:
 
 ```
 evolutionary-ipd/
-├── app.py                      # Streamlit UI
+├── app.py                      # Streamlit UI (main page)
 ├── config.py                   # Configuration constants
 ├── requirements.txt            # Dependencies
 ├── .env                        # API keys (gitignored)
 ├── .env.example                # Template for .env
 ├── .gitignore                  # Git ignore patterns
 ├── README.md                   # This file
+│
+├── pages/
+│   └── 1_Champions.py          # Champions Hall of Fame page
 │
 ├── src/
 │   ├── __init__.py
@@ -549,9 +655,11 @@ evolutionary-ipd/
 │   ├── logger.py               # JSON logging per generation
 │   ├── god_mode.py             # Environmental stressors
 │   ├── profiler.py             # Behavioral tests
-│   └── character_generator.py  # LLM integration
+│   ├── character_generator.py  # LLM integration
+│   └── hall_of_fame.py         # Champion storage system
 │
 └── data/
+    ├── hall_of_fame.json       # Saved champions for All-Star mode
     └── tournament_{timestamp}/
         ├── generation_0.json
         ├── generation_1.json
