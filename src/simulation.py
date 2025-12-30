@@ -48,17 +48,19 @@ def play_match(
     rounds: int,
     payoffs: PayoffMatrix = DEFAULT_PAYOFFS,
     god_engine: GodEngine | None = None,
+    god_event_callback: Callable[[int, List[str], int, int], None] | None = None,
 ) -> Tuple[int, int]:
     history_a: List[Tuple[Action, Action]] = []
     history_b: List[Tuple[Action, Action]] = []
     score_a = 0
     score_b = 0
 
-    for _ in range(rounds):
+    for round_num in range(1, rounds + 1):
         # Get agent history (may be modified by god_engine)
         effective_history_a = history_a
         effective_history_b = history_b
         round_payoffs = payoffs
+        active_rules: List[str] = []
         
         # Apply God Mode rules before getting actions
         if god_engine is not None:
@@ -79,6 +81,11 @@ def play_match(
             effective_history_a = result.history_a
             effective_history_b = result.history_b
             round_payoffs = result.payoffs
+            active_rules = result.active_rules
+            
+            # Report god mode events via callback
+            if active_rules and god_event_callback is not None:
+                god_event_callback(round_num, active_rules, getattr(agent_a, 'id', 0), getattr(agent_b, 'id', 0))
             
             # Re-get actions with potentially modified history (memory loss)
             if result.history_a != history_a:
@@ -149,6 +156,7 @@ def run_internal_tournament(
     rounds: int,
     payoffs: PayoffMatrix = DEFAULT_PAYOFFS,
     god_engine: GodEngine | None = None,
+    god_event_callback: Callable[[int, List[str], int, int], None] | None = None,
 ) -> Dict[str, float]:
     if not population:
         return {"avg_fitness": 0.0, "max_fitness": 0.0, "min_fitness": 0.0}
@@ -163,7 +171,7 @@ def run_internal_tournament(
         agent_i = pop_list[i]
         for j in range(i + 1, pop_size):
             agent_j = pop_list[j]
-            score_i, score_j = play_match(agent_i, agent_j, rounds, payoffs, god_engine)
+            score_i, score_j = play_match(agent_i, agent_j, rounds, payoffs, god_engine, god_event_callback)
             agent_i.fitness += score_i
             agent_j.fitness += score_j
 
@@ -187,6 +195,7 @@ def run_internal_tournament_with_progress(
     match_callback: MatchCallback | None = None,
     round_callback: RoundCallback | None = None,
     god_engine: GodEngine | None = None,
+    god_event_callback: Callable[[int, List[str], int, int], None] | None = None,
 ) -> Tuple[Dict[str, float], List[RoundLog] | None]:
     if not population:
         return {"avg_fitness": 0.0, "max_fitness": 0.0, "min_fitness": 0.0}, None
@@ -225,7 +234,7 @@ def run_internal_tournament_with_progress(
                     round_callback=round_callback,
                 )
             else:
-                score_i, score_j = play_match(agent_i, agent_j, rounds, payoffs, god_engine)
+                score_i, score_j = play_match(agent_i, agent_j, rounds, payoffs, god_engine, god_event_callback)
 
             agent_i.fitness += score_i
             agent_j.fitness += score_j

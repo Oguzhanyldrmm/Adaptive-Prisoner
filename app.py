@@ -368,6 +368,9 @@ gen_progress = progress_cols[0].progress(0.0, text="Generation")
 match_progress = progress_cols[1].progress(0.0, text="Match")
 status_placeholder = progress_container.empty()
 
+# God Mode Event Log (only shown when God Mode is enabled)
+god_event_log_placeholder = st.empty()
+
 # Run button
 run_clicked = st.button("▶️ Run Simulation", type="primary")
 
@@ -395,6 +398,32 @@ if run_clicked:
     
     # Initialize God Engine if enabled
     god_engine: GodEngine | None = None
+    god_events: List[str] = []  # Store recent events
+    god_event_counter = [0]  # Use list to allow mutation in closure
+    
+    # Rule emoji and description mapping
+    RULE_INFO = {
+        "trembling_hand_a": ("🤚", "Agent A's hand trembled!"),
+        "trembling_hand_b": ("🤚", "Agent B's hand trembled!"),
+        "economic_crisis": ("📉", "ECONOMIC CRISIS - Payoffs halved!"),
+        "high_temptation": ("💰", "HIGH TEMPTATION - Greed test!"),
+        "memory_loss_a": ("🧠", "Agent A forgot everything!"),
+        "memory_loss_b": ("🧠", "Agent B forgot everything!"),
+        "info_leak_a": ("🕵️", "Agent A is SPYING!"),
+        "info_leak_b": ("🕵️", "Agent B is SPYING!"),
+    }
+    
+    def god_event_callback(round_num: int, active_rules: List[str], agent_a_id: int, agent_b_id: int) -> None:
+        """Called when God Mode rules are triggered during a match. Just collects events."""
+        for rule in active_rules:
+            emoji, desc = RULE_INFO.get(rule, ("⚡", rule))
+            event_msg = f"{emoji} R{round_num} | A{agent_a_id} vs A{agent_b_id}: {desc}"
+            god_events.append(event_msg)
+            god_event_counter[0] += 1
+            # Keep only last 50 events in memory (display shows last 10)
+            if len(god_events) > 50:
+                god_events.pop(0)
+    
     if god_mode_enabled:
         god_engine = GodEngine(rng=rng)
         status_placeholder.info("⚡ God Mode ACTIVE - Environmental stressors enabled")
@@ -404,6 +433,10 @@ if run_clicked:
             (gen + 1) / generations, text=f"Generation {gen + 1}/{generations}"
         )
         match_progress.progress(0.0, text="Match")
+        
+        # Clear events for new generation
+        god_events.clear()
+        god_event_counter[0] = 0
 
         if detailed_tournament:
             progress_state: Dict[str, int] = {"match_index": 0, "match_total": 0}
@@ -422,6 +455,13 @@ if run_clicked:
                 status_placeholder.text(
                     f"Gen {gen + 1}/{generations} | Match {match_index}/{match_total}{god_mode_label}"
                 )
+                
+                # Update god event log during match updates (synchronized with progress bar)
+                if god_mode_enabled and god_events:
+                    with god_event_log_placeholder.container():
+                        st.markdown("### ⚡ God Mode Event Log")
+                        for event in reversed(god_events[-10:]):
+                            st.text(event)
 
             stats, _ = run_internal_tournament_with_progress(
                 population,
@@ -430,9 +470,15 @@ if run_clicked:
                 match_callback=match_callback,
                 round_callback=None,
                 god_engine=god_engine,
+                god_event_callback=god_event_callback if god_mode_enabled else None,
             )
         else:
-            stats = run_internal_tournament(population, rounds_per_match, god_engine=god_engine)
+            stats = run_internal_tournament(
+                population, 
+                rounds_per_match, 
+                god_engine=god_engine,
+                god_event_callback=god_event_callback if god_mode_enabled else None,
+            )
 
         log_generation(population, gen, st.session_state.log_folder)
 
